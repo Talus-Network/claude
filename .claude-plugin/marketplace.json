@@ -10,7 +10,7 @@
       "name": "talus",
       "source": "./plugins/talus/",
       "description": "Helpers for building Nexus Tools and Talus-related artifacts.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }
