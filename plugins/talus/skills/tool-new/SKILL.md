@@ -1,13 +1,25 @@
 ---
 name: tool-new
-description: Scaffold a new Nexus Tool in Rust and implement it end-to-end based on the user's description. Detects context: inside the Talus-Network/nexus-tools repo (or a fork) adds a member at offchain/tools/<name>/ and generates the extra files the CI pipeline requires (tools.json, build.rs, [[bin]], version-threaded FQN); in any other Cargo workspace with members = ["tools/*"] adds a member at tools/<name>/; otherwise scaffolds a standalone crate. Fetches the latest reference patterns from upstream Talus-Network/nexus-tools at invocation time (or reads them locally when inside a clone or fork) — no baked-in templates; the NexusTool trait signatures are taken from upstream math/src/i64/add.rs at every invocation. After the scaffold compiles, replaces the placeholder Input/Output and invoke() logic with the real implementation — for well-known APIs (OpenAI, Anthropic, etc.) it applies the actual request/response shapes directly rather than asking the user to design the schema. Use when the user asks to "create a Nexus Tool", "scaffold a Nexus Tool", "build a new Nexus Tool", "new Talus tool", or similar.
+description: Scaffold a new **off-chain** Nexus Tool in Rust (an HTTP service implementing the NexusTool trait) and implement it end-to-end based on the user's description. Detects context: inside the Talus-Network/nexus-tools repo (or a fork) adds a member at offchain/tools/<name>/ and generates the extra files the CI pipeline requires (tools.json, build.rs, [[bin]], version-threaded FQN); in any other Cargo workspace with members = ["tools/*"] adds a member at tools/<name>/; otherwise scaffolds a standalone crate. Fetches the latest reference patterns from upstream Talus-Network/nexus-tools at invocation time (or reads them locally when inside a clone or fork) — no baked-in templates; the NexusTool trait signatures are taken from upstream math/src/i64/add.rs at every invocation. After the scaffold compiles, replaces the placeholder Input/Output and invoke() logic with the real implementation — for well-known APIs (OpenAI, Anthropic, etc.) it applies the actual request/response shapes directly rather than asking the user to design the schema. Use when the user asks to "create a Nexus Tool", "scaffold a Nexus Tool", "build a new Nexus Tool", "new Talus tool", or similar. For a Move tool that runs on Sui and mutates on-chain state, use the `tool-new-onchain` skill instead.
 argument-hint: "[--auto] [tool-name] [fqn-prefix] [description]"
 allowed-tools: Bash(pwd) Bash(command -v *) Bash(head *) Bash(find *) Bash(chmod +x *) Bash(bash -n *) Bash(grep *) Bash(sed -n *) Bash(gh api *)
 ---
 
 # `tool-new` — scaffold a new Nexus Tool in Rust
 
-A Nexus Tool is an HTTPS service that implements the `NexusTool` trait from the `nexus-toolkit` crate. The canonical reference is [Talus-Network/nexus-tools](https://github.com/Talus-Network/nexus-tools). The authoritative development guidelines live in [docs/tool-development.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/tool-development.md) and [docs/toolkit-rust.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/toolkit-rust.md) in the SDK repo.
+An off-chain Nexus Tool is an HTTPS service that implements the `NexusTool` trait from the `nexus-toolkit` crate. The canonical code reference is [Talus-Network/nexus-tools](https://github.com/Talus-Network/nexus-tools).
+
+The authoritative development guidelines live in [Talus-Network/nexus-docs](https://github.com/Talus-Network/nexus-docs) — the SDK repo's own `docs/` tree was removed and moved there:
+
+| Topic | Page |
+|---|---|
+| Building an off-chain tool, end to end | [guides/tool-development/build-offchain-tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/build-offchain-tool.md) |
+| `NexusTool` trait and toolkit runtime | [reference/toolkit/rust.md](https://github.com/Talus-Network/nexus-docs/blob/main/reference/toolkit/rust.md) |
+| Signed HTTP, TLS, proxy requirements | [guides/tool-development/tool-communication.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/tool-communication.md) |
+| Result verification and key rotation | [guides/tool-development/verify-offchain-tool-result.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/verify-offchain-tool-result.md) |
+| `nexus tool` CLI surface | [reference/cli/tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/reference/cli/tool.md) |
+
+Do not link to `nexus-sdk/blob/main/docs/...` anywhere — those paths 404.
 
 This skill scaffolds a working skeleton, then implements the real Input/Output and invoke() logic based on the user's description. The `NexusTool` trait signatures used in the generated code come from upstream `tools/math/src/i64/add.rs` (fetched at every invocation) — never from a baked-in copy of the trait.
 
@@ -117,7 +129,9 @@ Use the rest of Phase 2 to resolve the new tool's inputs.
 
 - **`description`** — one-line description; used in both `Cargo.toml` `[package].description` and `impl NexusTool::description`. Ask if missing in both interactive and auto mode — there is no reasonable default. **Validate: must not contain `"` (double quote) or `\` (backslash).** The description is substituted unescaped into a Rust string literal (`fn description() -> &'static str { "..." }`) and a TOML string (`[package].description = "..."`) — either character breaks the generated file. If the user-provided description contains one, ask them to rephrase (e.g. replace `Says "hello"` with `Says hello (with quotes)`); in auto mode print the rejection reason and stop rather than silently mangling.
 
-- **`fqn_prefix`** — reverse-domain prefix that goes **before** the action segment. No trailing dot. Validate: `^[a-z][a-z0-9.-]*[a-z0-9]$`. Beyond the workspace root, the prefix may carry zero or more middle segments (category, source) extracted from the description.
+- **`fqn_prefix`** — reverse-domain prefix that goes **before** the action segment. No trailing dot. Beyond the workspace root, the prefix may carry zero or more middle segments (category, source) extracted from the description.
+  - **Validate against the protocol's FQN grammar, not just a loose shape.** The parser behind `fqn!` splits the whole FQN on `.` and requires: at least three parts, and **every** part matching `^[a-z][a-z0-9_-]+$` — lowercase, **at least two characters**, never starting with a digit, `-`, or `_`. So each segment of `fqn_prefix` must be ≥ 2 characters, and so must the action segment. A single-letter segment (`x.acme.foo`) is rejected at compile time by `fqn!`, not at registration. Source: [build-offchain-tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/build-offchain-tool.md).
+  - If the description yields a one-character category, source, or action, expand it to a real word rather than emitting it (e.g. `x` → drop the segment; action `go` is fine, action `t` is not).
   - *Interactive:* if not provided, suggest the workspace root prefix from convention inference and let the user extend it (e.g. `xyz.taluslabs.weather.open-meteo`). **Never invent or default this without asking.**
   - *Auto mode:* if the user provided an explicit `fqn_prefix` argument, honor it as-is — skip the rest of this bullet. Otherwise compose `fqn_prefix = <root> [. <category>] [. <source>]` where the middle segments are description-driven and optional:
     1. **Workspace root** — from workspace inference if available, else the default `com.example`.
@@ -181,6 +195,7 @@ Files to read (two groups — note the difference):
   - `offchain/tools/math/src/main.rs`
   - `offchain/tools/math/src/i64/add.rs`
   - `offchain/tools/math/README.md`
+  - `offchain/tools/math/tests/toolkit_config_v2.rs` — the toolkit-runtime-config integration test the CI pipeline expects each tool to carry (see Phase 4.5)
 
 In order of preference:
 
@@ -245,7 +260,7 @@ This means math/add.rs is the source of truth for trait method shapes at every i
 
 **Mode-specific edits after substitution:**
 
-- **nexus-tools mode:** in `src/<tool_name_snake>.rs`, switch the `fqn!()` form. The template's `fn fqn()` body has four lines: a `// Generic workspace / standalone:` comment, the active `fqn!("...@1")` call, a `// nexus-tools mode — uncomment...` comment, and a commented-out `// fqn!(concat!(...))` line. Delete the first three lines entirely and uncomment the last one, leaving only the `fqn!(concat!(...))` call. The version is then threaded from `build.rs` (see Phase 4.5).
+- **nexus-tools mode:** in `src/<tool_name_snake>.rs`, switch the `fqn!()` form. The template's `fn fqn()` body carries the active `fqn!("...@1")` call under a `// Generic workspace / standalone:` comment, followed by a commented-out four-line `// fqn!(concat!(...))` block. Delete the comment and the active call, then uncomment the block, leaving only the `fqn!(concat!(...))` call. The commented block is already wrapped the way rustfmt wants it — do not re-join it onto one line, or `cargo fmt --check` fails. The version is then threaded from `build.rs` (see Phase 4.5).
 - **No secrets needed:** if analysis of the tool description finds no plausible required env var, empty the body of `validate_config` and delete the `EXAMPLE_API_KEY` static, the `example_api_key()` accessor, and `load_required` (if nothing else calls it). Do not delete `validate_config` itself — `main.rs` calls it unconditionally.
 - **Additional secrets:** to add more env vars, declare another `static <NAME>: OnceLock<String>` and accessor, and add another `.set(load_required("<NAME>"))` line to `validate_config`. Follow the EXAMPLE_API_KEY pattern exactly.
 
@@ -253,20 +268,29 @@ This means math/add.rs is the source of truth for trait method shapes at every i
 
 Skip this phase entirely in generic workspace mode and standalone mode.
 
-**This phase is driven by the live README fetched in Phase 3, not by instructions baked into this skill.** The upstream repo may evolve — new files, changed structure, additional steps. The README is the authoritative source; this skill's description below is context to help interpret it, not a substitute for reading it.
+**Copy every generated file's shape from the reference tool (`offchain/tools/math/`), and read the README fetched in Phase 3 for the surrounding process.** The two sources are not interchangeable, and where they disagree the reference tool wins:
 
-1. In the README fetched in Phase 3, locate the section whose heading is "Adding a new tool" (or the closest equivalent if the heading has changed).
-2. **If the section is not found:** stop and tell the user that the upstream README no longer contains an "Adding a new tool" section. Ask them to check [https://github.com/Talus-Network/nexus-tools](https://github.com/Talus-Network/nexus-tools) and confirm how to proceed before continuing.
-3. **If the section is found:** read it in full and follow every step it prescribes, using the reference tool (`offchain/tools/math/`) as the concrete implementation to copy from and adapt. Do not skip any step listed there.
+> The README's "Adding a new tool" section currently shows a `tools.json` example containing only `environment`, `resources`, and `signed_http` — it **omits `command`**. `build.rs` panics at compile time when `tools.json["command"]` is absent, and every real tool in the repo (`math`, `http`, `llm-openai-chat-completion`, `templating-jinja`, `exchanges-coinbase`) uses `{"tool_name", "command", "environment"}`. Generating the README's shape produces a crate that does not build. This is a known upstream documentation drift — mention it to the user, then copy the real file.
 
-For context, at the time this skill was last updated the section prescribed four things — but treat this as background knowledge for interpretation only, not as the current source of truth:
+Procedure:
 
-- A `tools.json` at the crate root. The file must contain at minimum a `"command"` field equal to the binary/crate name (this is what `build.rs` reads and validates). It also carries `"tool_name"` and an `"environment"` map. Copy from the reference tool and substitute the name — do not invent the structure. If the tool reads runtime secrets via `std::env::var`, add their keys to `"environment"` as entries; actual values are injected by the deployment pipeline, never hardcoded.
-- A `build.rs` copied verbatim from an existing tool; do not invent it. It reads `tools.json["command"]`, asserts it matches the `[[bin]]` name in `Cargo.toml`, and emits `TOOL_FQN_VERSION` as a Cargo env var from the Docker build arg (defaulting to `"1"` locally). It requires `[build-dependencies]` with `serde_json` and `toml` — these are already added to `Cargo.toml` in Phase 4.
-- A `[[bin]]` section in `Cargo.toml` with `name` equal to the crate name, enforced by `build.rs` at compile time.
-- `fqn!()` using `concat!("...", env!("TOOL_FQN_VERSION"))` so the content version flows from the CI build arg.
+1. In the README fetched in Phase 3, locate the section whose heading is "Adding a new tool" (or the closest equivalent if the heading has changed). It is the authority on **process** — CI triggers, discovery globs, deploy tracks, extra steps this skill does not know about.
+2. **If the section is not found:** don't stop. Generate the files below from the reference tool, then tell the user the README section is missing so they can check [https://github.com/Talus-Network/nexus-tools](https://github.com/Talus-Network/nexus-tools) for process changes.
+3. **If the section prescribes a step this list does not cover, follow it** — it is newer than this skill. Flag the discrepancy to the user.
 
-If the live README section contains steps beyond or different from this list, follow the README — it is newer than this skill. Flag any discrepancy to the user so they are aware.
+Files to generate, each copied from `offchain/tools/math/` and adapted:
+
+- **`tools.json`** at the crate root, shape `{"tool_name": "<crate>", "command": "<crate>", "environment": {"RUST_LOG": "info"}}`. `"command"` must equal the `[[bin]]` name and the crate name — `build.rs` asserts this. If the tool reads runtime secrets, add one `"environment"` entry per env var name; values are injected by the deployment pipeline, never hardcoded here.
+- **`build.rs`** copied verbatim; do not invent it. It reads `tools.json["command"]`, asserts it matches the `[[bin]]` name in `Cargo.toml`, and emits `TOOL_FQN_VERSION` as a Cargo env var from the Docker build arg (defaulting to `"1"` locally). It requires `[build-dependencies]` with `serde_json` and `toml` — already added to `Cargo.toml` in Phase 4.
+- **`[[bin]]`** in `Cargo.toml` with `name` equal to the crate name.
+- **`fqn!()`** using `concat!("...", env!("TOOL_FQN_VERSION"))` so the content version flows from the CI build arg.
+- **`tests/toolkit_config_v2.rs`**, adapted from the reference tool's copy. The CI `prepare` step generates a strict Toolkit runtime config (version 2) and mounts it as the per-tool `toolkit-config` secret; `register` validates it before publishing. This test is what proves the binary actually accepts that config: it spawns `env!("CARGO_BIN_EXE_<crate>")` with `NEXUS_TOOLKIT_CONFIG_PATH` pointing at a temp file containing `{"signed_http":{"mode":"disabled"}}` and `BIND_ADDR` on a free loopback port, then waits for the process to accept a TCP connection.
+
+  Adapting it takes four changes, and the last one is not optional:
+  1. `CARGO_BIN_EXE_math` → `CARGO_BIN_EXE_<crate>` (the crate name, hyphens included).
+  2. The temp-directory prefix and the panic messages, so a failure names this tool.
+  3. The test function name — `math_binary_accepts_workbench_toolkit_config` → `tool_binary_accepts_workbench_toolkit_config`.
+  4. **One `.env("<VAR>", "test")` call on the `Command` per env var the tool's `validate_config` loads.** The reference tool has no required env vars; the scaffold ships with `EXAMPLE_API_KEY`, and `validate_config` calls `std::process::exit(1)` when a required var is missing. Without this the test fails with *"binary exited before accepting the Workbench Toolkit config"* and `fatal: required env var … is not set` on stderr — which reads like a toolkit-config problem but is not. Revisit this list in Phase 7 step 3 when the real env vars replace `EXAMPLE_API_KEY`.
 
 ### Phase 5 — Wire into workspace `tools/.just` (workspace mode only)
 
@@ -279,6 +303,8 @@ If the target is a workspace member, edit `tools/.just` (at `offchain/tools/.jus
 - `clippy` → `cargo +stable clippy --package <tool_name>`
 
 The workspace root `Cargo.toml` does not need editing — `members = ["tools/*"]` discovers the new member automatically.
+
+**Do not treat `.just` as the workspace's tool inventory.** Upstream's copy lists only a subset of the crates that actually exist under `offchain/tools/` (at the time of writing: `math` and `llm-openai-chat-completion`, out of a dozen). Convention inference in Phase 2 must enumerate tool directories with `find`, never by reading `.just`. Appending the new package to the recipes is still correct — the recipes are the developer entry point — but a package missing from them is normal, not a signal.
 
 ### Phase 6 — Verify the scaffold compiles
 
@@ -323,7 +349,7 @@ Cross-reference the generated files against [checklist.md](checklist.md) before 
 > - **Auto mode (`--auto` / `--yes`) or all three positional args were provided:** implement everything below without asking. The user already gave you the description; further questions are friction.
 > - **Interactive mode:** briefly state the plan (one paragraph naming the Input fields, Output variants, secrets, and HTTP client you intend to use), then implement. Do NOT ask the user to design the schema or decide field names — those follow from the description. Ask only if a piece of information is genuinely unavailable (an obscure private API with no documentation, for example).
 
-Use the user's description plus your knowledge of the named service. **For well-known APIs and services (OpenAI, Anthropic, Slack, Stripe, GitHub, Postgres, Redis, S3, etc.) the request/response shapes, auth pattern, and endpoints are part of your training — apply them directly. Do not produce `placeholder: String` for an OpenAI tool; produce the real `model`, `messages`/`prompt`, `temperature`, `max_tokens` fields and the real `completion`, `usage`, `finish_reason` output shape.** Apply [tool-development.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/tool-development.md) conventions throughout.
+Use the user's description plus your knowledge of the named service. **For well-known APIs and services (OpenAI, Anthropic, Slack, Stripe, GitHub, Postgres, Redis, S3, etc.) the request/response shapes, auth pattern, and endpoints are part of your training — apply them directly. Do not produce `placeholder: String` for an OpenAI tool; produce the real `model`, `messages`/`prompt`, `temperature`, `max_tokens` fields and the real `completion`, `usage`, `finish_reason` output shape.** Apply [build-offchain-tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/build-offchain-tool.md) conventions throughout.
 
 **Steps (perform in order, all of them, no skipping):**
 
@@ -331,9 +357,15 @@ Use the user's description plus your knowledge of the named service. **For well-
 
 2. **Replace the Output enum.** Replace the placeholder `Ok { result: String }` with the actual success shape (e.g. for OpenAI completion: `Ok { completion: String, model: String, prompt_tokens: u32, completion_tokens: u32, finish_reason: String }`). Replace the generic `ErrUpstream`/`ErrConfig` with specific failure variants matching the real failure modes (`err_rate_limited`, `err_invalid_input`, `err_upstream`, `err_timeout`, `err_auth`, etc.). Output ports are flat — no nested response objects. Crucial ports must NOT be `Option<...>`; missing data surfaces as an `err_*` variant.
 
+   **Encoder constraints — these fail at runtime, not at compile time.** The toolkit no longer returns the output as JSON. It serialises the enum to JSON, then re-encodes it as canonical BCS `OffchainToolOutput` (`encode_tagged_output` in `toolkit-rust/src/runtime.rs`). That encoder requires:
+   - **Externally tagged.** The serde default. Never add `#[serde(tag = "...")]`, `#[serde(untagged)]`, or `#[serde(flatten)]` on the Output enum or its variants — the encoder rejects anything that does not serialise to a single-key object.
+   - **Every variant is a struct variant.** A unit variant (`Ok`) or a tuple variant (`Ok(String)`) compiles fine and then fails every invocation with HTTP 500 `output_serialization_error`, because the variant payload must be a JSON object. A success variant with no ports is written `Ok {}`.
+   - **Exactly one variant per response** — guaranteed by returning one enum value; nothing to do.
+   - A port whose value is a JSON array becomes a `many` NexusData value; a scalar or object becomes `one`. Keep ports flat so downstream vertices can consume them directly.
+
 3. **Wire up the real secrets.** Identify every secret the tool needs (API keys, OAuth tokens, connection strings, signing keys). For each: declare `static <NAME>: OnceLock<String>`, add `.set(load_required("<NAME>"))` to `validate_config`, add a private accessor function. Once real env vars are wired, delete every trace of the `EXAMPLE_API_KEY` scaffold — all three references: the `static EXAMPLE_API_KEY` declaration, the `EXAMPLE_API_KEY.set(...)` line inside `validate_config`, and the `example_api_key()` accessor function. **When a secret is needed, do not ask whether to put it in Input — the answer is always env var.** Log loads by name only: `log::debug!(target: "<tool>", "env var OPENAI_API_KEY loaded");`
 
-   **nexus-tools mode only:** also update `<target-dir>/tools.json`'s `"environment"` map to reflect the real env var names. The map drives the deployment pipeline's secret injection — if it lists `EXAMPLE_API_KEY` (or is empty) but the code calls `load_required("OPENAI_API_KEY")`, deployment will inject the wrong var and `validate_config` will exit at startup. Add one entry per real env var; remove any leftover `EXAMPLE_API_KEY` entry.
+   **nexus-tools mode only:** also update `<target-dir>/tests/toolkit_config_v2.rs` so its `.env(...)` calls match the new set of required vars exactly — a leftover `EXAMPLE_API_KEY` there is harmless, but a *missing* real var makes the test fail at startup. And update `<target-dir>/tools.json`'s `"environment"` map to reflect the real env var names. The map drives the deployment pipeline's secret injection — if it lists `EXAMPLE_API_KEY` (or is empty) but the code calls `load_required("OPENAI_API_KEY")`, deployment will inject the wrong var and `validate_config` will exit at startup. Add one entry per real env var; remove any leftover `EXAMPLE_API_KEY` entry.
 
 4. **Add real dependencies** to `Cargo.toml` for any external calls. Defaults: `reqwest = { version = "0.12", features = ["json"] }` for HTTP, official SDK crates where they exist, `serde_json` for JSON shaping. In workspace mode prefer `*.workspace = true` if the dep is already in the upstream workspace; otherwise pin a major version.
 
@@ -344,7 +376,7 @@ Use the user's description plus your knowledge of the named service. **For well-
    - `invoke` does not return `Result` — failures are valid output variants returned as `Output::Err*`.
 
    **Additional, only if the tool makes external calls (HTTP, DB, gRPC, message-bus, etc.):**
-   - Set an explicit timeout on every external call (e.g. `reqwest::Client::builder().timeout(Duration::from_secs(30)).build()`). A slow upstream otherwise holds the invocation open indefinitely.
+   - Set an explicit timeout on every external call, and keep it **below** what `NexusTool::timeout()` returns. `timeout()` defaults to **10 seconds**, is published in `/meta`, and becomes the tool's registered on-chain timeout — a 30s client timeout under a 10s declared timeout means the runtime gives up before the tool can map the failure to an `err_*` variant. Either use a client timeout comfortably under 10s (e.g. `Duration::from_secs(8)`), or override `timeout()` on the impl to a value the upstream actually needs and set the client timeout under *that*. Upstream precedent for overriding: `offchain/tools/storage-walrus/src/*.rs`, `offchain/tools/llm-openai-chat-completion/src/main.rs`.
    - Wrap each I/O call so its failure modes map to specific `Output::Err*` variants — never let a raw HTTP/SDK error type leak as a string.
 
    **Pure-computation tools** (math, parsing, encoding, pure transformation — like upstream `tools/math`) skip the external-call bullets entirely. The mandatory bullets still apply.
@@ -371,7 +403,7 @@ Use the user's description plus your knowledge of the named service. **For well-
 
 8. **Update the README.** Replace the placeholder `Input` and `Output Variants & Ports` sections with the real shapes. Preserve the FQN-titled heading. **No `TODO` text may remain in the README.**
 
-9. **Verify.** Run `cargo check`, `cargo test`, `cargo clippy`, and `cargo fmt --check` (from `offchain/` in nexus-tools mode when working from the repo root). Fix anything that fails before declaring Phase 7 done. Also re-run the Phase 6 secrets scan against the real Input struct now that it has real fields (the Phase 4 scaffold had only `placeholder: String`, which was safe by construction — only post-step-1 Input fields can carry secrets violations):
+9. **Verify.** Run `cargo check`, `cargo test`, `cargo clippy`, and `cargo fmt --check` (from `offchain/` in nexus-tools mode when working from the repo root). Fix anything that fails before declaring Phase 7 done. If the `nexus` CLI is on PATH, also start the tool and run `nexus tool validate offchain --url http://localhost:8080/<what path() returns>` — it is the only check that catches an output enum the BCS encoder will reject at runtime. The path suffix is required; without it the CLI cannot find `/meta`. Also re-run the Phase 6 secrets scan against the real Input struct now that it has real fields (the Phase 4 scaffold had only `placeholder: String`, which was safe by construction — only post-step-1 Input fields can carry secrets violations):
 
    ```
    sed -n '/struct Input/,/^}/p' <target-dir>/src/<tool_name_snake>.rs \
@@ -383,7 +415,7 @@ Use the user's description plus your knowledge of the named service. **For well-
 **Completion gate.** Phase 7 is done only when ALL of the following hold (all greps use ERE / POSIX character classes so they work on both GNU and BSD grep):
 - `grep -rnE '//[[:space:]]*TODO|^[[:space:]]*TODO:' <target-dir>/src <target-dir>/README.md` returns no matches. This catches `// TODO` comments in Rust and `TODO:` at line starts in markdown without false-positiving on legitimate words. (For pending work intentionally deferred to a later commit, use `// FIXME:` instead — it's not scanned by this gate.)
 - No identifier named `placeholder` exists in the generated code: `grep -rnE '\bplaceholder\b' <target-dir>/src` returns no matches. (Real fields, vars, or function args must use domain-specific names.)
-- No scaffold `#[allow(dead_code)]` markers remain: `grep -rnE '#\[allow\(dead_code\)\]' <target-dir>/src` returns no matches. Both scaffold markers (on `Output::Ok` and on `example_api_key()`) should be deleted once their items are either used (Ok returned, accessor called) or removed.
+- No scaffold `#[allow(dead_code)]` markers remain: `grep -rnE '#\[allow\(dead_code\)\]' <target-dir>/src` returns no matches. Both scaffold markers (one on the `Output` enum, one on `example_api_key()`) should be deleted once their items are either used (every variant reachable, accessor called) or removed. If you ever need to keep a dead-code allowance on an output enum, put it on the **enum**, never on a variant — a variant-level attribute makes rustfmt expand every variant and `cargo fmt --check` fails.
 - No `EXAMPLE_API_KEY` reference remains anywhere in the generated tool: `grep -rnE 'EXAMPLE_API_KEY|example_api_key' <target-dir>/src` returns no matches.
 - `Output::Ok` carries the real success fields, not `result: String`.
 - `invoke()` actually calls the described service or operates on the real inputs — not just logs and returns `ErrUpstream`.
@@ -413,7 +445,13 @@ Before writing, verify the substituted script has no bash syntax errors: `bash -
 
 Write the substituted content to `<target-dir>/test.sh`, then `chmod +x <target-dir>/test.sh`.
 
-After writing, print the curl examples to the user immediately — same output as `./test.sh start` would show — so they have the invocations at hand without running the script first.
+After writing, print the examples to the user immediately — same output as `./test.sh start` would show — so they have the invocations at hand without running the script first.
+
+**What the script does and does not check.** `./test.sh run` starts the server and runs `nexus tool validate offchain --url http://localhost:<port>/<tool_path>`, falling back to raw health and meta requests when the `nexus` CLI is not on PATH.
+
+**The URL must include `path()`.** The toolkit mounts `/meta` and `/invoke` *under* each tool's `path()`. With `path()` returning `"/forecast"`, `/meta` at the root is a `405` and only `/forecast/meta` serves the metadata — so `nexus tool validate offchain --url http://localhost:8080` fails with *"failed to parse tool meta JSON: expected value at line 1 column 1"*, which looks like a broken tool and is not. Point the CLI at `http://localhost:8080/forecast`. Root `GET /health` works either way. The generated script derives this: it builds `TOOL_URL` from the port and `__TOOL_PATH__` and uses it for validation, `/meta`, and `/invoke`. The same applies when registering: `nexus tool register offchain --url` takes the path-scoped URL, and the register step preserves that path when composing the on-chain URL. It deliberately does **not** pipe `POST /invoke` into `jq`: a successful `/invoke` response is canonical BCS (`OffchainToolOutput`), not JSON, in every mode — signed HTTP disabled included. Only toolkit-level rejections come back as JSON (`input_deserialization_error`, `input_integrity_error`, `permission_denied`, `output_serialization_error`), which is why a JSON body from `/invoke` means the request was refused. If you hand-edit the generated script, preserve this: `curl … /invoke | jq .` prints binary garbage and reads as a broken tool.
+
+The script's printed examples also include `<workspace>/target/debug/<tool_name> --meta | jq .`. `bootstrap!` intercepts `--meta`, prints a JSON array of each tool's metadata, and exits without binding a port — this is what CI feeds to `nexus tool register offchain --from-meta -`, and it is the fastest way to eyeball the generated input/output schemas.
 
 **`just` integration (workspace mode + `just` on PATH from Phase 1)**
 
@@ -435,21 +473,58 @@ test-dev tool:
 
 **Deployment reminders**
 
-After printing the curl examples, surface these to the user. They are protocol invariants — verified against the upstream SDK docs — that apply to every Nexus Tool.
+After printing the examples, surface these to the user. They are protocol invariants that apply to every off-chain Nexus Tool.
 
-1. **HTTPS with a publicly trusted TLS certificate.** Leader nodes validate certificates against the system root trust store (same as `curl`). A self-signed certificate will be rejected. Use Let's Encrypt or a cloud-managed certificate. Source: [tool-development.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/tool-development.md), [tool-communication.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/guides/tool-communication.md).
+1. **The toolkit runtime is HTTP-only — put it behind a TLS terminator.** Leader nodes reach tools over HTTPS and validate the certificate against the system root trust store (same as `curl`); a self-signed certificate is rejected. Use Let's Encrypt or a cloud-managed certificate. Source: [tool-communication.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/tool-communication.md).
 
-2. **Reverse proxy must forward `X-Nexus-Sig-*` headers.** Some API gateways strip unknown headers by default — verify yours passes them through. Do not use middleware that rewrites request or response bodies; the Ed25519 signature binds the raw bytes. Source: tool-communication.md.
+2. **Signed HTTP is configured by a JSON file, not env vars.** The runtime reads its config from the path in `NEXUS_TOOLKIT_CONFIG_PATH`. If that variable is unset the runtime falls back to safe defaults with signed HTTP **disabled** — which is why local development and `./test.sh` work with no config at all. In production you mount a config file:
 
-3. **Keep the server clock NTP-synced.** Signed requests carry validity windows; clock skew between your host and Leader nodes causes authentication failures. Source: tool-development.md.
+   ```json
+   {
+     "invoke_max_body_bytes": 10485760,
+     "signed_http": {
+       "mode": "required",
+       "allowed_leaders_path": "./allowed_leaders.json",
+       "tools": {
+         "<the tool's FQN>": {
+           "response_signing_key": "<32-byte ed25519 key, hex or base64>",
+           "replay_cache_ttl_ms": 300000
+         }
+       }
+     }
+   }
+   ```
 
-4. **`health()` must check dependent services before deploying** — see Phase 7 step 7. Source: [toolkit-rust.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/toolkit-rust.md).
+   Points that bite in practice: `mode` defaults to `"required"` when the `signed_http` section is present at all, so a half-filled section fails closed; the section requires `allowed_leaders` or `allowed_leaders_path`, and a non-empty `tools` map, or the process refuses to start; `response_signing_key` is optional (without it the tool still authenticates callers, it just does not sign its results); `invoke_max_body_bytes` defaults to 10 MiB and `/invoke` **rejects any request without a `Content-Length` header**. Generate and register the keys with `nexus tool auth keygen`, `nexus tool auth register-key`, `nexus tool auth list-keys`, and export the allowlist with `nexus tool auth export-allowed-leaders`.
 
-5. **Nonce deduplication is in-memory by default.** The toolkit automatically deduplicates nonces (preventing replay attacks) using an in-memory store. For a single-process deployment this is sufficient. For multi-instance deployments behind a load balancer, in-memory state is not shared across processes — use sticky sessions or a shared store (e.g. Redis) to ensure replays routed to a different instance are still rejected. Source: tool-communication.md.
+3. **Reverse proxy must forward `X-Nexus-Sig-*` headers.** Some API gateways strip unknown headers by default — verify yours passes them through. Do not use middleware that rewrites request or response bodies; the Ed25519 signature binds the raw bytes. Source: tool-communication.md.
+
+4. **Keep the server clock NTP-synced.** Signed requests carry `iat_ms`/`exp_ms` validity windows; clock skew between your host and Leader nodes causes authentication failures.
+
+5. **`health()` must check dependent services before deploying** — see Phase 7 step 6. A trivially-passing `health()` hides outages from Leader nodes. Source: [reference/toolkit/rust.md](https://github.com/Talus-Network/nexus-docs/blob/main/reference/toolkit/rust.md).
+
+6. **Nonce deduplication is in-memory by default** (`replay_cache_ttl_ms`, 5 minutes). Sufficient for a single process. Behind a load balancer the cache is not shared across instances — use sticky sessions or a shared store so a replay routed elsewhere is still rejected. Source: tool-communication.md.
+
+7. **Register, then verify.** The registration path is:
+
+   ```sh
+   # <path> is what path() returns — /meta and /invoke live under it, not at the root
+   nexus tool validate offchain --url https://<host>/<path>   # health + meta + oneOf check
+   nexus tool register offchain --url https://<host>/<path>   # or: --from-meta - (skips live HTTP)
+                                 [--batch]                    # register every tool on the server
+                                 [--invocation-cost <MIST>]   # defaults to 0
+                                 [--collateral-coin <ID>]     # must differ from the gas coin
+   nexus tool list
+   nexus tool inspect --tool-fqn "<fqn>@1"
+   ```
+
+   Registration mints an `OwnerCap<OverTool>`; it is what authorizes `nexus tool unregister`, `nexus tool update-url`, `nexus tool update-timeout`, `nexus tool set-invocation-cost`, and `nexus tool claim-collateral` later. Registration is gated by an allowlist during beta — an authorization failure there usually means the address is not on it, not that the tool is wrong.
+
+8. **Schema changes are breaking changes.** Adding a required input port, removing an output port, renaming a variant, or changing a type all change the contract DAGs depend on — publish as `…@2` and leave `…@1` registered. Non-contract changes (a bug fix in `invoke`, a faster implementation) can be redeployed under the same FQN. Source: [build-offchain-tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/build-offchain-tool.md).
 
 ## Conventions (cited from upstream, summary)
 
-From [tool-development.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/tool-development.md):
+From [build-offchain-tool.md](https://github.com/Talus-Network/nexus-docs/blob/main/guides/tool-development/build-offchain-tool.md):
 
 - **Naming.** snake_case for input ports and output variants; descriptive over terse.
 - **Errors.** Variants prefixed `err` are treated as erroneous by the Nexus runtime and have their ports propagated on-chain regardless of edges.
@@ -459,11 +534,14 @@ From [tool-development.md](https://github.com/Talus-Network/nexus-sdk/blob/main/
 - **Stable output.** Crucial data is non-optional; missing data → return an `err` variant instead of `ok` with `None`.
 - **Docs.** Every tool has a README, included into `main.rs` via `#![doc = include_str!("../README.md")]`.
 
-From [toolkit-rust.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs/toolkit-rust.md) — for the exact `NexusTool` trait method signatures consult upstream `tools/math/src/i64/add.rs` (the skill fetches it at every invocation; see Phase 4 verification step):
+From [reference/toolkit/rust.md](https://github.com/Talus-Network/nexus-docs/blob/main/reference/toolkit/rust.md) — for the exact `NexusTool` trait method signatures consult upstream `tools/math/src/i64/add.rs` (the skill fetches it at every invocation; see Phase 4 verification step):
 
 - **Stateless.** Tool structs should not carry mutable state across invocations. Per-startup config (env vars) is cached in module-level `OnceLock<String>` statics, populated once by `validate_config()` in `main()`. Anything per-request lives in the `Input` shape, not the struct.
-- **Signed HTTP.** Optional `authorize` hook receives `AuthContext` with the verified Leader node identity. Implement when policy requires per-leader gating.
-- **`bootstrap!` macro.** Accepts a single tool, `[Tool1, Tool2, ...]`, or `(socket_addr, [...])`. When multiple tools share a binary, each must have a unique `path()`.
+- **`timeout()`.** Trait method with a **10-second default**, published in `/meta` and registered on-chain. Every external call the tool makes must complete inside it — override the method rather than letting a client timeout exceed the declared value. See Phase 7 step 5.
+- **`authorize()`.** Optional hook, default allow, invoked only after signed HTTP has authenticated the request. Receives `AuthContext` (`= nexus_sdk::signed_http::v3::wire::AuthenticatedRequest`) carrying the verified invoker identity; returning `Err` produces a signed `403`. Implement when policy requires per-leader gating, allowlists, or rate limits.
+- **`description()`.** Required, and part of the durable registry metadata users browse — SDK registration rejects blank descriptions.
+- **Output encoding.** `/invoke` returns canonical BCS `OffchainToolOutput`, never JSON, in every mode. The enum must be externally tagged and every variant must be a struct variant. See Phase 7 step 2.
+- **`bootstrap!` macro.** Accepts a single tool, `[Tool1, Tool2, ...]`, or `(socket_addr, [...])`. When multiple tools share a binary, each must have a unique `path()`. It calls `env_logger::try_init()` itself, reads `BIND_ADDR` (default `127.0.0.1:8080`), and intercepts `--meta` to print tool metadata as a JSON array and exit without serving.
 
 ## Failure modes
 
@@ -471,7 +549,12 @@ From [toolkit-rust.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs
 - **`gh` not available but network is up.** Fall back to WebFetch on `raw.githubusercontent.com`.
 - **`cargo` not on PATH.** Scaffold can still proceed, but Phase 6 verification cannot run — flag this clearly and ask the user how to proceed.
 - **Existing files at the target path.** Never overwrite without explicit confirmation.
-- **README "Adding a new tool" section not found (nexus-tools mode).** Stop Phase 4.5. Tell the user the section is missing and ask them to confirm how to proceed before continuing.
+- **README "Adding a new tool" section not found (nexus-tools mode).** Do not stop. Generate the Phase 4.5 files from the reference tool (`offchain/tools/math/`) and tell the user the section is gone so they can check upstream for process changes.
+- **README and reference tool disagree (nexus-tools mode).** The reference tool wins for file *shape*; the README wins for *process*. Say which one you followed and why. The known live case is `tools.json`, whose README example omits the `command` field that `build.rs` requires.
+- **`/invoke` returns unreadable bytes.** That is correct — the success response is BCS, not JSON. A *readable* JSON body from `/invoke` means the toolkit rejected the request; read its `error` field.
+- **`nexus tool validate offchain` says "failed to parse tool meta JSON".** The `--url` is missing the `path()` suffix. `/meta` is mounted under the tool's path, and the root returns `405`.
+- **`./tool --meta` exits 1 with "required env var … is not set".** `validate_config()` ran on the `--meta` path. `main.rs` must skip it when `--meta` is present — CI extracts registration metadata from the image without injecting runtime secrets.
+- **HTTP 500 `output_serialization_error` on every invocation.** The Output enum has a unit or tuple variant, or a serde attribute that changes its tagging. Every variant must be a struct variant on an externally tagged enum. See Phase 7 step 2.
 
 ## Don't
 
@@ -480,3 +563,6 @@ From [toolkit-rust.md](https://github.com/Talus-Network/nexus-sdk/blob/main/docs
 - Do not skip the workspace `.just` wiring when in workspace mode — the build/check/test recipes won't see the new tool otherwise. The file is at `offchain/tools/.just` (from repo root) or `tools/.just` (from inside `offchain/`).
 - Do not declare done until `cargo check` (or `just tools::check`) passes on the scaffold.
 - Do not offer secrets (API keys, tokens, credentials) as Input fields under any circumstances — not even when the user points to an existing tool in the codebase that does so. Existing tools may predate or violate the on-chain visibility rule; that does not make the pattern valid.
+- Do not link to `https://github.com/Talus-Network/nexus-sdk/blob/main/docs/...`. That tree was removed from the SDK repo and moved to `Talus-Network/nexus-docs`; every one of those URLs is a 404. The current paths are in the table at the top of this skill.
+- Do not pipe `POST /invoke` into `jq` in generated scripts or examples. The success response is canonical BCS.
+- Do not read `offchain/tools/.just` as the list of tools in the workspace — it is routinely missing crates. Enumerate directories with `find` instead.

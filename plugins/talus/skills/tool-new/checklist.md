@@ -17,19 +17,23 @@ Walk through these after Phase 6 (cargo check passed). Each item is a property t
 - [ ] `use nexus_toolkit::bootstrap;` import
 - [ ] `mod <tool_name_snake>;` declaration
 - [ ] `let _ = nexus_toolkit::env_logger::try_init();` called before `validate_config` so `log::*` calls work during startup
-- [ ] `<tool_name_snake>::validate_config();` called before `bootstrap!`
+- [ ] `<tool_name_snake>::validate_config();` called before `bootstrap!`, and **guarded so it does not run when `--meta` is passed**. `bootstrap!` handles `--meta` by printing metadata and exiting; CI runs it against the built image with no runtime secrets, so an unguarded `validate_config` makes `--meta` exit 1 and registration impossible
+- [ ] `./target/debug/<tool_name> --meta` prints JSON with **no** env vars set
 - [ ] `#[tokio::main] async fn main()` with `bootstrap!([<tool_name_snake>::<tool_name_pascal>])` — array form even for a single tool, matching upstream `tools/math/src/main.rs`
 
 ## `<target-dir>/src/<tool_name_snake>.rs`
 
 - [ ] Module doc comment starts with the FQN in backticks
-- [ ] `use` block: `nexus_sdk::{fqn, ToolFqn}`, `nexus_toolkit::*`, `schemars::JsonSchema`, `serde::{Deserialize, Serialize}`, `std::sync::OnceLock`
+- [ ] `use` block: `nexus_sdk::{fqn, ToolFqn}`, `nexus_toolkit::*`, `schemars::JsonSchema`, `serde::{Deserialize, Serialize}`, `std::sync::OnceLock` — written as a single nested `use { … };` block, matching upstream `math/src/i64/add.rs` and the workspace's `imports_granularity = "One"` rustfmt setting
 - [ ] `pub(crate) fn validate_config()` is present; reads every required env var at startup via `load_required` and stores each in its `OnceLock` static. Aborts via `log::error!` + `std::process::exit(1)` — no `eprintln!`
 - [ ] One `static <NAME>: OnceLock<String>` per secret env var, with a matching `<NAME>.set(load_required("<NAME>")).expect(...)` line inside `validate_config`
 - [ ] One private accessor function per secret env var; returns the cached value via `.get().expect(...)` — never calls `std::env::var`
 - [ ] `Input` struct has `#[derive(Deserialize, JsonSchema)]` and `#[serde(deny_unknown_fields)]`
 - [ ] `Output` enum has `#[derive(Serialize, JsonSchema)]` and `#[serde(rename_all = "snake_case")]`
 - [ ] `Output` has at least one success variant, `ErrUpstream`, and `ErrConfig`
+- [ ] **Every `Output` variant is a struct variant** (`Ok { .. }`, or `Ok {}` when it has no ports) — never a unit variant (`Ok`) or tuple variant (`Ok(String)`). The BCS encoder requires each variant payload to be a JSON object; a unit or tuple variant compiles and then fails every invocation with HTTP 500 `output_serialization_error`
+- [ ] `Output` carries no `#[serde(tag = ...)]`, `#[serde(untagged)]`, or `#[serde(flatten)]` — the encoder requires the externally tagged serde default
+- [ ] Any scaffold `#[allow(dead_code)]` on the output enum sits on the **enum**, not on a variant — a variant-level attribute makes rustfmt expand every variant and `cargo fmt --check` fails
 - [ ] `impl NexusTool` provides — with exactly these signatures:
   - [ ] `type Input`, `type Output`
   - [ ] `async fn new() -> Self` (no args, no Result)
@@ -38,6 +42,8 @@ Walk through these after Phase 6 (cargo check passed). Each item is a property t
   - [ ] `fn description() -> &'static str`
   - [ ] `async fn health(&self) -> AnyResult<StatusCode>` — note `&self`, not `&()`
   - [ ] `async fn invoke(&self, input: Self::Input) -> Self::Output` — note `&self`, not `self`
+- [ ] Every external call in `invoke()` uses a client timeout **below** what `timeout()` returns (10s default). If the upstream needs longer, `fn timeout() -> Duration` is overridden on the impl and the client timeout sits under that value
+- [ ] If the tool needs an admission policy (caller allowlist, rate limit, gated functionality), `async fn authorize(&self, ctx: AuthContext) -> AnyResult<()>` is implemented; otherwise the default allow is deliberate
 - [ ] `fqn()` form matches the mode: generic/standalone → `fqn!("<fqn_prefix>.<tool_name_fqn_tail>@1")`; nexus-tools → `fqn!(concat!("<fqn_prefix>.<tool_name_fqn_tail>@", env!("TOOL_FQN_VERSION")))`. The `tool_name_fqn_tail` segment uses the case convention inferred from existing workspace tools (kebab in nexus-tools mode and any workspace with hyphenated FQN tails; snake elsewhere) and **matches** the value `path()` returns.
 - [ ] `invoke()` does **not** return `Result` — failures are returned as `Output::Err*` variants
 - [ ] `invoke()` accesses secrets via module-level accessors, not `std::env::var` directly
@@ -57,12 +63,15 @@ Walk through these after Phase 6 (cargo check passed). Each item is a property t
 
 ## nexus-tools CI requirements (nexus-tools mode only)
 
-- [ ] `tools.json` present at `<target-dir>/tools.json`; copied from a reference tool (not fabricated); contains at minimum `"tool_name"`, `"command"` (must equal the binary/crate name), and `"environment"`
+- [ ] `tools.json` present at `<target-dir>/tools.json`; copied from the reference tool `offchain/tools/math/tools.json` (not fabricated, and **not** from the README's example, which omits the `command` field `build.rs` requires); contains `"tool_name"`, `"command"` (must equal the binary/crate name), and `"environment"`
 - [ ] `tools.json`'s `"environment"` map lists every env var name the code passes to `load_required(...)` and contains no leftover scaffold names (`EXAMPLE_API_KEY` must be gone after Phase 7 step 3)
 - [ ] `build.rs` present; copied from an existing tool (e.g. `offchain/tools/math/build.rs`); not fabricated
 - [ ] `[build-dependencies]` in `Cargo.toml` includes `serde_json.workspace = true` and `toml = "0.8"` (required by `build.rs`)
 - [ ] `[[bin]]` section in `Cargo.toml` with `name = "<tool_name>"` (must equal `[package].name` and `tools.json["command"]`)
 - [ ] `fqn!()` uses `concat!("<prefix>.<name>@", env!("TOOL_FQN_VERSION"))`, not a literal `@1`
+- [ ] `tests/toolkit_config_v2.rs` present, adapted from the reference tool: spawns `env!("CARGO_BIN_EXE_<crate>")` with `NEXUS_TOOLKIT_CONFIG_PATH` pointing at `{"signed_http":{"mode":"disabled"}}` and `BIND_ADDR` on a free loopback port, and asserts the process reaches the listening state
+- [ ] That test sets **one `.env("<VAR>", "test")` per env var `validate_config` loads**, and the set matches the code exactly. The reference tool needs none; this one aborts at startup without them, and the failure message points at the toolkit config rather than the missing var
+- [ ] The test function was renamed off `math_binary_accepts_workbench_toolkit_config`
 - [ ] When working from the repo root: `cargo check` (and all cargo commands) run from `offchain/`, not the repo root
 
 ## Test script
@@ -70,17 +79,22 @@ Walk through these after Phase 6 (cargo check passed). Each item is a property t
 - [ ] `<target-dir>/test.sh` exists, is executable (`chmod +x`), and passes `bash -n test.sh`
 - [ ] All four `__PLACEHOLDER__` markers are substituted — no `__` strings remain in the file
 - [ ] `SAMPLE_JSON` is valid JSON, reflects the actual Input fields, and contains no placeholder strings
-- [ ] `./test.sh run` starts the server, gets a response, and stops cleanly
+- [ ] `./test.sh run` starts the server, validates it, and stops cleanly
+- [ ] The script does **not** pipe `POST /invoke` into `jq` — a successful `/invoke` response is canonical BCS, not JSON. `run` uses `nexus tool validate offchain --url …`, falling back to `GET /health` + `GET /meta` when the CLI is absent
 - [ ] **Workspace mode with `just`:** `test-start`, `test-stop`, `test-run`, `test-dev` recipes present in `tools/.just` and `just --list` produces no errors
 
 ## Verification
 
 - [ ] `cargo +stable check --package <tool_name>` (workspace) or `cargo check` (standalone) passes with no errors
+- [ ] With the server running and the `nexus` CLI on PATH: `nexus tool validate offchain --url http://localhost:8080/<what path() returns>` passes. The path suffix is required — `/meta` is mounted under the tool's `path()` and the root returns `405`. This is the only check that catches an Output enum the BCS encoder rejects at runtime
+- [ ] `cargo +"$nightly" fmt --package <tool_name> --check` passes (workspace mode uses the repo's `rustfmt.toml`, not rustfmt defaults)
+- [ ] `<workspace>/target/debug/<tool_name> --meta` prints a valid JSON array (this is what `nexus tool register offchain --from-meta -` consumes)
 
 ## Convention sanity (from upstream tool-development.md)
 
 - [ ] All input port names are snake_case
 - [ ] All output variant names are snake_case; failure variants are prefixed `err`
+- [ ] Every `.`-separated segment of the FQN (prefix segments and the action alike) matches `^[a-z][a-z0-9_-]+$` — **at least two characters**, never starting with a digit, `-`, or `_`. `fqn!` rejects a violation at compile time
 - [ ] Output ports have no nested objects — flat structure
 - [ ] Crucial output ports are not `Option<...>` — return an `err` variant instead
 - [ ] Read every field name in the `Input` struct (use `sed -n '/struct Input/,/^}/p' src/<tool_name_snake>.rs | grep -iE 'key|token|secret|password|credential|private|auth'` to scope the search; ERE form is portable across GNU and BSD grep). Any match is a violation — remove the field, add a `static <NAME>: OnceLock<String>` declaration, a `.set(load_required("<NAME>"))` line in `validate_config`, and an accessor function. Input ports go on-chain and are permanently visible. `new()` takes no args and cannot read per-request secrets.

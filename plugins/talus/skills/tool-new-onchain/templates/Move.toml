@@ -1,0 +1,17 @@
+[package]
+name = "__MODULE_SNAKE__"
+edition = "2024"
+
+[dependencies]
+nexus_primitives = __NEXUS_PRIMITIVES_DEP__
+nexus_interface = __NEXUS_INTERFACE_DEP__
+
+[addresses]
+__MODULE_SNAKE__ = "0x0"
+
+# `testnet` and `mainnet` are reserved system environment aliases on this Sui
+# toolchain and cannot be redeclared here, but `nexus tool register onchain`
+# still needs an alias mapped to the connected chain id. Read the id with
+# `sui client chain-identifier`.
+[environments]
+__ENV_ALIAS__ = "__CHAIN_ID__"
